@@ -1,0 +1,41 @@
+{
+  "name": "Aura Dental Clinic Management",
+  "short_name": "Aura Dental",
+  "description": "Complete dental clinic management system with OPD, billing, and patient management",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#667eea",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["medical", "business", "productivity"],
+  "shortcuts": [
+    {
+      "name": "OPD Registration",
+      "short_name": "OPD",
+      "description": "Register new patient",
+      "url": "/#walkin",
+      "icons": [{"src": "/icon-192.png", "sizes": "192x192"}]
+    },
+    {
+      "name": "Consultation",
+      "short_name": "Consult",
+      "description": "Start consultation",
+      "url": "/#doctors-section",
+      "icons": [{"src": "/icon-192.png", "sizes": "192x192"}]
+    }
+  ]
+}
