@@ -1,157 +1,91 @@
-// ============================================================
-// AURA DENTAL CLINIC — Cloud Server
-// Node.js + Express + Socket.io + MySQL
-// ============================================================
-
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-const mysql = require('mysql2/promise');
-const cors = require('cors');
-const path = require('path');
+const express = require("express");
+const cors    = require("cors");
+const helmet  = require("helmet");
+const path    = require("path");
+const pool    = require("./db");
 
 const app = express();
-const server = http.createServer(app);
-const io = new Server(server, {
-  cors: {
-    origin: '*',
-    methods: ['GET', 'POST', 'PUT', 'DELETE']
-  }
+app.use(helmet({ contentSecurityPolicy: false }));
+app.use(cors({ origin: "*", methods: ["GET","POST","PUT","PATCH","DELETE"] }));
+app.use(express.json());
+app.use(express.static(path.join(__dirname, "public")));
+
+app.get("/test-db", async (req, res, next) => {
+  try { const [rows] = await pool.query("SELECT NOW() AS time"); res.json({ db: "connected", time: rows[0].time }); }
+  catch (err) { next(err); }
 });
 
-// Middleware
-app.use(cors());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-app.use(express.static(path.join(__dirname, 'public')));
-
-// Database connection pool
-const db = mysql.createPool({
-  host: process.env.DB_HOST || 'localhost',
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'aura_dental',
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
-  enableKeepAlive: true,
-  keepAliveInitialDelay: 0
+app.get("/api/doctors", async (req, res, next) => {
+  try { const [rows] = await pool.query("SELECT * FROM doctors ORDER BY id ASC"); res.json(rows); }
+  catch (err) { next(err); }
 });
 
-// Test database connection
-db.getConnection()
-  .then(conn => {
-    console.log('✅ MySQL Connected');
-    conn.release();
-  })
-  .catch(err => {
-    console.warn('⚠️  MySQL not connected:', err.message);
-    console.log('   App will run in localStorage mode (static files only)');
-  });
-
-// Make db available to routes
-app.locals.db = db;
-
-// ============================================================
-// SOCKET.IO REAL-TIME EVENTS
-// ============================================================
-io.on('connection', socket => {
-  console.log('🔌 Client connected:', socket.id);
-
-  // Doctor sends prescription → Reception gets instant alert
-  socket.on('sendPrescription', data => {
-    io.emit('newPrescription', {
-      ...data,
-      time: new Date().toISOString()
-    });
-    console.log('📋 Prescription sent:', data.patientName);
-  });
-
-  // Reception confirms print
-  socket.on('prescriptionPrinted', data => {
-    io.emit('prescriptionPrinted', {
-      ...data,
-      time: new Date().toISOString()
-    });
-  });
-
-  // Payment confirmed
-  socket.on('confirmPayment', data => {
-    io.emit('paymentConfirmed', {
-      ...data,
-      time: new Date().toISOString()
-    });
-  });
-
-  socket.on('disconnect', () => {
-    console.log('❌ Disconnected:', socket.id);
-  });
+app.get("/api/patients", async (req, res, next) => {
+  try { const [rows] = await pool.query("SELECT * FROM patients ORDER BY created_at DESC"); res.json(rows); }
+  catch (err) { next(err); }
 });
 
-// ============================================================
-// API ROUTES
-// ============================================================
-
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    database: db ? 'connected' : 'disconnected'
-  });
+app.get("/api/patients/:id", async (req, res, next) => {
+  try {
+    const [patients] = await pool.query("SELECT * FROM patients WHERE id = ?", [req.params.id]);
+    if (!patients.length) return res.status(404).json({ error: "Patient not found" });
+    const [visits] = await pool.query("SELECT v.*, d.name AS doctor_name, d.specialization FROM visits v JOIN doctors d ON v.doctor_id = d.id WHERE v.patient_id = ? ORDER BY v.created_at DESC", [req.params.id]);
+    res.json({ ...patients[0], visits });
+  } catch (err) { next(err); }
 });
 
-// HTTP fallback for real-time events (for clients without Socket.io)
-app.post('/api/send-prescription', (req, res) => {
-  io.emit('newPrescription', { ...req.body, time: new Date().toISOString() });
-  res.json({ success: true });
+app.post("/api/patients", async (req, res, next) => {
+  try {
+    const { name, age, mobile } = req.body;
+    if (!name || !mobile) return res.status(400).json({ error: "Name and mobile required" });
+    if (!/^\d{10}$/.test(mobile)) return res.status(400).json({ error: "Mobile must be 10 digits" });
+    const [result] = await pool.query("INSERT INTO patients (name, age, mobile) VALUES (?, ?, ?)", [name, age || null, mobile]);
+    const [rows] = await pool.query("SELECT * FROM patients WHERE id = ?", [result.insertId]);
+    res.status(201).json(rows[0]);
+  } catch (err) { next(err); }
 });
 
-app.post('/api/prescription-printed', (req, res) => {
-  io.emit('prescriptionPrinted', { ...req.body, time: new Date().toISOString() });
-  res.json({ success: true });
+app.get("/api/visits", async (req, res, next) => {
+  try {
+    const [rows] = await pool.query("SELECT v.id, v.visit_type, v.status, v.created_at, p.name AS patient_name, p.mobile AS patient_mobile, d.name AS doctor_name, d.specialization FROM visits v JOIN patients p ON v.patient_id = p.id JOIN doctors d ON v.doctor_id = d.id ORDER BY v.created_at DESC");
+    res.json(rows);
+  } catch (err) { next(err); }
 });
 
-// Import route modules
-try {
-  app.use('/api', require('./routes/patients'));
-  app.use('/api', require('./routes/visits'));
-  app.use('/api', require('./routes/queue'));
-  app.use('/api', require('./routes/reference'));
-  console.log('✅ API routes loaded');
-} catch (err) {
-  console.warn('⚠️  API routes not loaded:', err.message);
-  console.log('   App will serve static files only');
-}
-
-// ============================================================
-// SERVE SINGLE PAGE APPLICATION
-// ============================================================
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+app.get("/api/visits/today", async (req, res, next) => {
+  try {
+    const [rows] = await pool.query("SELECT v.id, v.visit_type, v.status, v.created_at, p.name AS patient_name, p.mobile AS patient_mobile, d.name AS doctor_name, d.specialization FROM visits v JOIN patients p ON v.patient_id = p.id JOIN doctors d ON v.doctor_id = d.id WHERE DATE(v.created_at) = CURDATE() ORDER BY v.created_at ASC");
+    res.json(rows);
+  } catch (err) { next(err); }
 });
 
-// ============================================================
-// START SERVER
-// ============================================================
-const PORT = process.env.PORT || 3000;
-
-server.listen(PORT, () => {
-  console.log(`
-╔════════════════════════════════════════════════╗
-║   🦷  AURA DENTAL CLINIC — CLOUD READY        ║
-║   🌐  Port: ${PORT.toString().padEnd(33)}║
-║   🔌  Socket.io: ENABLED                      ║
-║   💾  Database: ${(db ? 'MySQL' : 'localStorage').padEnd(28)}║
-╚════════════════════════════════════════════════╝
-  `);
+app.post("/api/visits", async (req, res, next) => {
+  try {
+    const { patient_id, doctor_id, visit_type } = req.body;
+    if (!patient_id || !doctor_id) return res.status(400).json({ error: "patient_id and doctor_id required" });
+    const [result] = await pool.query("INSERT INTO visits (patient_id, doctor_id, visit_type, status) VALUES (?, ?, ?, 'waiting')", [patient_id, doctor_id, visit_type || "consultation"]);
+    const [rows] = await pool.query("SELECT * FROM visits WHERE id = ?", [result.insertId]);
+    res.status(201).json(rows[0]);
+  } catch (err) { next(err); }
 });
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received, closing server...');
-  server.close(() => {
-    db.end();
-    process.exit(0);
-  });
+app.patch("/api/visits/:id", async (req, res, next) => {
+  try {
+    const { status } = req.body;
+    const VALID = ["waiting","consulting","completed","cancelled"];
+    if (!VALID.includes(status)) return res.status(400).json({ error: "Invalid status" });
+    const [result] = await pool.query("UPDATE visits SET status=? WHERE id=?", [status, req.params.id]);
+    if (!result.affectedRows) return res.status(404).json({ error: "Visit not found" });
+    const [rows] = await pool.query("SELECT * FROM visits WHERE id=?", [req.params.id]);
+    res.json(rows[0]);
+  } catch (err) { next(err); }
 });
+
+app.use((err, req, res, next) => {
+  console.error(new Date().toISOString(), err.message);
+  res.status(500).json({ error: "Internal server error" });
+});
+app.use((req, res) => { res.status(404).json({ error: req.method + " " + req.path + " not found" }); });
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log("Aura Dental Care API running on port " + PORT));
